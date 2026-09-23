@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -34,23 +35,52 @@ var (
 	clientsMu sync.Mutex
 )
 
-// Random 6-character ID generator
-func generateID() string {
+// Cleanup routine for rate limiter map
+func init() {
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		for range ticker.C {
+			clientsMu.Lock()
+			for ip, client := range clients {
+				if time.Since(client.lastReset) > 5*time.Minute {
+					delete(clients, ip)
+				}
+			}
+			clientsMu.Unlock()
+		}
+	}()
+}
+
+// Random 6-character ID generator with error checking
+func generateID() (string, error) {
 	b := make([]byte, 4)
-	rand.Read(b)
-	return base64.RawURLEncoding.EncodeToString(b)[:6]
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b)[:6], nil
 }
 
 // Rate Limiter Middleware
 func rateLimit(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ip := r.RemoteAddr
+		ip, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			ip = r.RemoteAddr
+		}
 
 		clientsMu.Lock()
 		client, exists := clients[ip]
 
-		if !exists || time.Since(client.lastReset) > time.Minute {
+		if !exists {
 			clients[ip] = &clientInfo{count: 1, lastReset: time.Now()}
+			clientsMu.Unlock()
+			next(w, r)
+			return
+		}
+
+		if time.Since(client.lastReset) > time.Minute {
+			client.count = 1
+			client.lastReset = time.Now()
 			clientsMu.Unlock()
 			next(w, r)
 			return
@@ -84,7 +114,11 @@ func shortenHandle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id := generateID()
+	id, err := generateID()
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 
 	urlMu.Lock()
 	urlStore[id] = req.URL
@@ -101,6 +135,10 @@ func shortenHandle(w http.ResponseWriter, r *http.Request) {
 
 // Redirect Handler
 func redirectHandle(w http.ResponseWriter, r *http.Request) {
+	if len(r.URL.Path) < 2 {
+		http.NotFound(w, r)
+		return
+	}
 	id := r.URL.Path[1:]
 
 	urlMu.RLock()
