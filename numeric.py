@@ -256,7 +256,10 @@
 #             if not diverged and not (math.isnan(y) or math.isinf(y)):
 #                 print("-" * 65)
 #                 print(f"Approximate y({x_target:.6f}) = {y:.6f}\n")
-
+# k1 = f(x, y)
+# k2 = f(x + (3.0 / 4.0) * h, y + (3.0 / 4.0) * h * k1)
+# y = y + h * (k1 / 3.0 + (2.0 * k2) / 3.0)
+# x = x + h
               
 
 # import math
